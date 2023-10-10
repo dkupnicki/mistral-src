@@ -96,16 +96,16 @@ class Attention(nn.Module):
                 args.sliding_window,
                 self.n_kv_heads,
                 self.args.head_dim,
-            ), dtype=torch.float16
-        ).cuda()
+            ), dtype=torch.float32
+        )
         self.cache_v = torch.empty(
             (
                 args.max_batch_size,
                 args.sliding_window,
                 self.n_kv_heads,
                 self.args.head_dim,
-            ), dtype=torch.float16
-        ).cuda()
+            ), dtype=torch.float32
+        )
 
     def forward(
         self, x: torch.Tensor, freqs_cis: torch.Tensor, positions: torch.Tensor, mask: Optional[torch.Tensor]
@@ -236,7 +236,7 @@ class Transformer(nn.Module):
             bias=False
         )
 
-        self.freqs_cis = precompute_freqs_cis(self.args.head_dim, 128_000).to("cuda")
+        self.freqs_cis = precompute_freqs_cis(self.args.head_dim, 128_000)
 
 
     def forward(
@@ -267,7 +267,7 @@ class Transformer(nn.Module):
         return self.output(self.norm(h)).float()
 
     @staticmethod
-    def from_folder(folder: Path, max_batch_size: int = 1, device="cuda", dtype=torch.float16):
+    def from_folder(folder: Path, max_batch_size: int = 1, device="cpu", dtype=torch.float32):
         with open(folder / 'params.json', 'r') as f:
             model_args = ModelArgs(**json.loads(f.read()))
         model_args.max_batch_size = max_batch_size
@@ -305,13 +305,13 @@ def generate(prompts: List[str], model: Transformer, tokenizer: Tokenizer, max_t
     min_prompt_len = min(prompt_lens)
     max_prompt_len = max(prompt_lens)
 
-    input_tokens = torch.full((len(prompts), max_prompt_len), tokenizer.pad_id, dtype=torch.long, device="cuda")
+    input_tokens = torch.full((len(prompts), max_prompt_len), tokenizer.pad_id, dtype=torch.long, device="cpu")
     for i, encoded in enumerate(encoded_prompts):
         input_tokens[i, :len(encoded)] = torch.tensor(encoded).to(input_tokens)
     input_mask = input_tokens != tokenizer.pad_id
 
     # pre-fill
-    positions = torch.arange(0, min_prompt_len).to("cuda")
+    positions = torch.arange(0, min_prompt_len)
     logits = model.forward(input_tokens[:, :min_prompt_len], positions)
     logprobs = nn.functional.log_softmax(logits, dim=-1)
 
@@ -346,6 +346,7 @@ def generate(prompts: List[str], model: Transformer, tokenizer: Tokenizer, max_t
 def demo(model_path: str, max_tokens: int = 35):
     tokenizer = Tokenizer(str(Path(model_path) / "tokenizer.model"))
     transformer = Transformer.from_folder(Path(model_path), max_batch_size=3)
+    transformer = torch.compile(transformer, backend="aio", options={"modelname": transformer._get_name()})
 
     res, _logprobs = generate(
         [
